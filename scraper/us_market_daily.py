@@ -45,7 +45,8 @@ def claude_translate(news_items):
     lines = []
     for i, (t, d) in enumerate(news_items[:5]):
         zh_title = gtranslate(t)
-        lines.append(f"{i+1}. {zh_title}\n   {d}")
+        zh_desc = gtranslate(d) if d else ""
+        lines.append(f"{i+1}. {zh_title}\n   {zh_desc}")
     return "\n\n".join(lines)
 
 # ── 1. 大盤 ──────────────────────────────────
