@@ -18,7 +18,7 @@ jobs:
         env:
           TELEGRAM_TOKEN_MARKET: ${{ secrets.TELEGRAM_TOKEN_MARKET }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          CLAUDE_API_KEY: ${{ secrets.CLAUDE_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: python scraper/us_market_daily.py
 
   house-price:
