@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
 """
-美股每日快報 - 每天早上 8:00（台北時間）執行
-翻譯由 Claude API 完成（需 CLAUDE_API_KEY 環境變數）
+美股每日快報 - Gemini 驅動版
+每天早上 8:00（台北時間）執行
 """
-import os, subprocess, json, re, xml.etree.ElementTree as ET, urllib.request, urllib.parse
+import os, subprocess, json, re, urllib.request, urllib.parse
 from datetime import datetime, timezone, timedelta
 
 tz_taipei = timezone(timedelta(hours=8))
 now = datetime.now(tz_taipei)
 date_str = now.strftime('%Y-%m-%d')
+weekday_zh = ["一","二","三","四","五","六","日"][now.weekday()]
 
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN_MARKET"]
 CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
-M7 = ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA"]
+GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 
 def fetch(url, extra=[]):
     r = subprocess.run(["curl", "-s", "-A", "Mozilla/5.0", "-L"] + extra + [url], capture_output=True, text=True)
@@ -23,33 +24,33 @@ def fetch_json(url):
     except: return None
 
 def send_telegram(msg):
-    subprocess.run([
+    r = subprocess.run([
         "curl", "-s", "-X", "POST",
         f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
         "-d", f"chat_id={CHAT_ID}",
         "--data-urlencode", f"text={msg}"
     ], capture_output=True, text=True)
+    print("Telegram:", r.stdout[:200])
 
-def gtranslate(text):
+def gemini(prompt, model="gemini-2.5-pro"):
+    body = json.dumps({
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"maxOutputTokens": 3000, "temperature": 0.7}
+    }).encode()
+    req = urllib.request.Request(
+        f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}",
+        data=body,
+        headers={"Content-Type": "application/json"}
+    )
     try:
-        encoded = urllib.parse.quote(text)
-        url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=zh-TW&dt=t&q={encoded}"
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with urllib.request.urlopen(req, timeout=60) as resp:
             result = json.loads(resp.read())
-            return "".join(x[0] for x in result[0] if x[0])
-    except:
-        return text
+            return result["candidates"][0]["content"]["parts"][0]["text"]
+    except Exception as e:
+        print(f"Gemini error: {e}")
+        return None
 
-def claude_translate(news_items):
-    lines = []
-    for i, (t, d) in enumerate(news_items[:5]):
-        zh_title = gtranslate(t)
-        zh_desc = gtranslate(d) if d else ""
-        lines.append(f"{i+1}. {zh_title}\n   {zh_desc}")
-    return "\n\n".join(lines)
-
-# ── 1. 大盤 ──────────────────────────────────
+# ── 1. 大盤數據 ──────────────────────────────
 mkt_lines = []
 for name, sym in [("SPY","SPY"),("QQQ","QQQ"),("道瓊","%5EDJI"),("納指","%5EIXIC"),("VIX","%5EVIX")]:
     d = fetch_json(f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}?interval=1d&range=2d")
@@ -65,7 +66,21 @@ for name, sym in [("SPY","SPY"),("QQQ","QQQ"),("道瓊","%5EDJI"),("納指","%5E
             mkt_lines.append(f"{arrow} {name}: {price:,.2f} ({chg:+.2f}%){vol_str}")
         except: pass
 
-# ── 2. 經濟數據 ──────────────────────────────
+# ── 2. M7 ────────────────────────────────────
+m7 = []
+for sym in ["AAPL","MSFT","NVDA","AMZN","GOOGL","META","TSLA"]:
+    d = fetch_json(f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}?interval=1d&range=2d")
+    if d:
+        try:
+            meta = d['chart']['result'][0]['meta']
+            price = meta.get('regularMarketPrice', 0)
+            prev  = meta.get('chartPreviousClose', 0)
+            chg   = ((price - prev) / prev) * 100 if prev else 0
+            m7.append((sym, price, chg, "🟢" if chg >= 0 else "🔴"))
+        except: pass
+m7.sort(key=lambda x: abs(x[2]), reverse=True)
+
+# ── 3. 經濟數據 ──────────────────────────────
 def get_econ(tab):
     raw = fetch("https://www.investing.com/economic-calendar/Service/getCalendarFilteredData",
         ["-X","POST","-H","X-Requested-With: XMLHttpRequest",
@@ -86,8 +101,7 @@ def get_econ(tab):
                 imp = int(bl_m.group(1)) if bl_m else 0
                 if imp >= 2:
                     out.append({
-                        "imp": imp,
-                        "name": nm_m.group(1).strip(),
+                        "imp": imp, "name": nm_m.group(1).strip(),
                         "actual": ac_m.group(1).strip() if ac_m else '',
                         "forecast": fc_m.group(1).strip() if fc_m else '',
                         "prev": pv_m.group(1).strip() if pv_m else '',
@@ -115,73 +129,67 @@ for e in [x for x in td if not x["actual"]][:4]:
     star = "🔴" if e["imp"] == 3 else "🟡"
     econ_today_lines.append(f"{star} {e['time']} {e['name']}（預期 {e['forecast'] or '—'}）")
 
-# ── 3. 新聞 ──────────────────────────────────
-WHITELIST = [
-    "fed", "rate", "inflation", "gdp", "cpi", "jobs", "payroll", "tariff",
-    "recession", "economy", "treasury", "yield", "debt",
-    "market", "stocks", "s&p", "nasdaq", "dow", "rally", "selloff", "crash",
-    "surge", "plunge", "volatility", "bull", "bear",
-    "earnings", "revenue", "profit", "beat", "miss", "guidance", "outlook",
-    "nvda", "aapl", "tsla", "msft", "amzn", "meta", "googl"
-]
-BLACKLIST = [
-    "sponsored", "advertisement", "opinion", "podcast", "video",
-    "quiz", "personal finance", "best stocks to buy"
-]
+# ── 4. 大盤數據摘要給 Gemini 參考 ────────────
+mkt_summary = "\n".join(mkt_lines) if mkt_lines else "資料暫不可用"
+m7_summary = "\n".join([f"{a} {s}: ${p:.2f} ({c:+.2f}%)" for s,p,c,a in m7])
 
-def news_score(title, desc):
-    text = (title + " " + desc).lower()
-    if any(b in text for b in BLACKLIST):
-        return -1
-    return sum(1 for w in WHITELIST if w in text)
+# ── 5. 讓 Gemini 搜尋新聞並整理 ─────────────
+prompt = f"""今天是 {date_str}（星期{weekday_zh}），台北時間早上 8 點。
 
-raw_news = []
-for url in ["https://feeds.content.dowjones.io/public/rss/mw_topstories",
-            "https://feeds.content.dowjones.io/public/rss/mw_marketpulse",
-            "https://feeds.reuters.com/reuters/businessNews"]:
-    rraw = fetch(url)
-    try:
-        root = ET.fromstring(rraw)
-        for item in root.findall('.//item')[:15]:
-            t = item.findtext('title','').strip()
-            d = re.sub(r'<[^>]+>', '', item.findtext('description','').strip())[:150]
-            if t and t not in [x[0] for x in raw_news]:
-                raw_news.append((t, d))
-    except: pass
+你是一個專業的財經新聞機器人，請幫我整理今日的國際財經與台灣時事，著重在經濟與股市。
 
-news_items = sorted(raw_news, key=lambda x: news_score(x[0], x[1]), reverse=True)
-news_items = [x for x in news_items if news_score(x[0], x[1]) >= 0][:8]
+以下是今日的大盤數據供你參考：
+{mkt_summary}
 
-# ── 4. M7 ────────────────────────────────────
-m7 = []
-for sym in M7:
-    d = fetch_json(f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}?interval=1d&range=2d")
-    if d:
-        try:
-            meta = d['chart']['result'][0]['meta']
-            price = meta.get('regularMarketPrice', 0)
-            prev  = meta.get('chartPreviousClose', 0)
-            chg   = ((price - prev) / prev) * 100 if prev else 0
-            m7.append((sym, price, chg, "🟢" if chg >= 0 else "🔴"))
-        except: pass
-m7.sort(key=lambda x: abs(x[2]), reverse=True)
+M7 個股：
+{m7_summary}
 
-# ── 5. 翻譯新聞 ──────────────────────────────
-news_zh = claude_translate(news_items)
+請用繁體中文，按以下格式輸出（直接輸出內容，不要加任何前言）：
+
+早安！今天是 {date_str} 星期{weekday_zh}。
+
+[用1-2句話點出今日最重要的市場主題]
+
+📊 今日財經時事
+
+1. [主題標題]
+[3-5條重點，每條以「・」開頭，包含具體數字和影響]
+
+2. [主題標題]
+[3-5條重點]
+
+3. [主題標題]
+[3-5條重點]
+
+4. 台灣股市與產業
+[3-5條台灣相關重點]
+
+💡 點評：
+[2-3句整體判斷，指出今日最值得關注的風險或機會]
+
+━━━
+僅供參考，非投資建議"""
+
+news_section = gemini(prompt)
+if not news_section:
+    news_section = "（今日新聞整理暫時無法取得）"
 
 # ── 6. 組裝訊息 ──────────────────────────────
 parts = [f"📰 美股每日快報\n📅 {date_str}｜盤前版"]
-parts.append("\n━━━ 昨日收盤 ━━━\n" + ("\n".join(mkt_lines) if mkt_lines else "（資料暫不可用）"))
+parts.append("\n━━━ 昨日收盤 ━━━\n" + (mkt_summary if mkt_lines else "（資料暫不可用）"))
+
 if econ_done_lines:
     parts.append("\n━━━ 昨日經濟數據 ━━━\n" + "\n".join(econ_done_lines))
 else:
     parts.append("\n━━━ 昨日經濟數據 ━━━\n昨日無重大數據公布")
+
 if econ_today_lines:
     parts.append("\n━━━ 今日待公布 ━━━\n" + "\n".join(econ_today_lines))
-parts.append("\n━━━ 今日要事 Top 5 ━━━\n" + news_zh)
+
+parts.append("\n━━━ 今日財經要聞 ━━━\n" + news_section)
+
 m7_str = "\n".join([f"{a} {s}: ${p:.2f} ({c:+.2f}%)" for s,p,c,a in m7])
 parts.append("\n━━━ M7 異動 ━━━\n" + m7_str)
-parts.append("\n━━━\n僅供參考，非投資建議")
 
 msg = "\n".join(parts)
 
