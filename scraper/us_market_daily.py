@@ -3,7 +3,7 @@
 美股每日快報 - 每天早上 8:00（台北時間）執行
 翻譯由 Claude API 完成（需 CLAUDE_API_KEY 環境變數）
 """
-import os, subprocess, json, re, xml.etree.ElementTree as ET, urllib.request
+import os, subprocess, json, re, xml.etree.ElementTree as ET, urllib.request, urllib.parse
 from datetime import datetime, timezone, timedelta
 
 tz_taipei = timezone(timedelta(hours=8))
@@ -12,7 +12,6 @@ date_str = now.strftime('%Y-%m-%d')
 
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN_MARKET"]
 CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
-CLAUDE_API_KEY = os.environ.get("CLAUDE_API_KEY", "")
 M7 = ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA"]
 
 def fetch(url, extra=[]):
@@ -31,48 +30,23 @@ def send_telegram(msg):
         "--data-urlencode", f"text={msg}"
     ], capture_output=True, text=True)
 
-def claude_translate(news_items):
-    if not CLAUDE_API_KEY:
-        return "\n\n".join([f"{i+1}. {t}\n   {d}" for i,(t,d) in enumerate(news_items[:5])])
-
-    titles = "\n".join([f"{i+1}. {t}\n   摘要：{d[:100]}" for i,(t,d) in enumerate(news_items)])
-    prompt = f"""以下是今日美股相關英文新聞標題和摘要，請：
-1. 選出最與股市相關的 5 則
-2. 每則翻成繁體中文標題（保留股票代號如 NVDA、AAPL）
-3. 每則附上兩句分析：第一句說發生什麼事，第二句說對市場的影響
-4. 每則附上受影響標的
-
-新聞列表：
-{titles}
-
-請用以下格式回覆（只輸出這個格式，不要其他說明）：
-1. 中文標題
-   分析第一句。分析第二句。
-   📌 標的
-
-（以此類推共5則）"""
-
-    body = json.dumps({
-        "model": "claude-haiku-4-5-20251001",
-        "max_tokens": 1024,
-        "messages": [{"role": "user", "content": prompt}]
-    }).encode()
-
-    req = urllib.request.Request(
-        "https://api.anthropic.com/v1/messages",
-        data=body,
-        headers={
-            "x-api-key": CLAUDE_API_KEY,
-            "anthropic-version": "2023-06-01",
-            "content-type": "application/json"
-        }
-    )
+def gtranslate(text):
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        encoded = urllib.parse.quote(text)
+        url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=zh-TW&dt=t&q={encoded}"
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
             result = json.loads(resp.read())
-            return result["content"][0]["text"]
-    except Exception as e:
-        return "\n\n".join([f"{i+1}. {t}\n   {d}" for i,(t,d) in enumerate(news_items[:5])])
+            return "".join(x[0] for x in result[0] if x[0])
+    except:
+        return text
+
+def claude_translate(news_items):
+    lines = []
+    for i, (t, d) in enumerate(news_items[:5]):
+        zh_title = gtranslate(t)
+        lines.append(f"{i+1}. {zh_title}\n   {d}")
+    return "\n\n".join(lines)
 
 # ── 1. 大盤 ──────────────────────────────────
 mkt_lines = []
