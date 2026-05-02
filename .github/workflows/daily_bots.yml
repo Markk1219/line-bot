@@ -1,0 +1,36 @@
+name: Daily Bots
+
+on:
+  schedule:
+    - cron: '0 0 * * *'   # 每天 UTC 00:00 = 台北 08:00
+  workflow_dispatch:        # 允許手動觸發測試
+
+jobs:
+  market-report:
+    name: 美股每日快報
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Run market report
+        env:
+          TELEGRAM_TOKEN_MARKET: ${{ secrets.TELEGRAM_TOKEN_MARKET }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          CLAUDE_API_KEY: ${{ secrets.CLAUDE_API_KEY }}
+        run: python scraper/us_market_daily.py
+
+  house-price:
+    name: 新北市房價通知
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Run house price report
+        env:
+          TELEGRAM_TOKEN_HOUSE: ${{ secrets.TELEGRAM_TOKEN_HOUSE }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python scraper/house_price_daily.py
