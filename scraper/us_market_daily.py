@@ -116,19 +116,41 @@ for e in [x for x in td if not x["actual"]][:4]:
     econ_today_lines.append(f"{star} {e['time']} {e['name']}（預期 {e['forecast'] or '—'}）")
 
 # ── 3. 新聞 ──────────────────────────────────
-news_items = []
+WHITELIST = [
+    "fed", "rate", "inflation", "gdp", "cpi", "jobs", "payroll", "tariff",
+    "recession", "economy", "treasury", "yield", "debt",
+    "market", "stocks", "s&p", "nasdaq", "dow", "rally", "selloff", "crash",
+    "surge", "plunge", "volatility", "bull", "bear",
+    "earnings", "revenue", "profit", "beat", "miss", "guidance", "outlook",
+    "nvda", "aapl", "tsla", "msft", "amzn", "meta", "googl"
+]
+BLACKLIST = [
+    "sponsored", "advertisement", "opinion", "podcast", "video",
+    "quiz", "personal finance", "best stocks to buy"
+]
+
+def news_score(title, desc):
+    text = (title + " " + desc).lower()
+    if any(b in text for b in BLACKLIST):
+        return -1
+    return sum(1 for w in WHITELIST if w in text)
+
+raw_news = []
 for url in ["https://feeds.content.dowjones.io/public/rss/mw_topstories",
-            "https://feeds.content.dowjones.io/public/rss/mw_marketpulse"]:
+            "https://feeds.content.dowjones.io/public/rss/mw_marketpulse",
+            "https://feeds.reuters.com/reuters/businessNews"]:
     rraw = fetch(url)
     try:
         root = ET.fromstring(rraw)
-        for item in root.findall('.//item')[:8]:
+        for item in root.findall('.//item')[:15]:
             t = item.findtext('title','').strip()
             d = re.sub(r'<[^>]+>', '', item.findtext('description','').strip())[:150]
-            if t and t not in [x[0] for x in news_items]:
-                news_items.append((t, d))
+            if t and t not in [x[0] for x in raw_news]:
+                raw_news.append((t, d))
     except: pass
-news_items = news_items[:8]
+
+news_items = sorted(raw_news, key=lambda x: news_score(x[0], x[1]), reverse=True)
+news_items = [x for x in news_items if news_score(x[0], x[1]) >= 0][:8]
 
 # ── 4. M7 ────────────────────────────────────
 m7 = []
