@@ -32,7 +32,7 @@ def send_telegram(msg):
     ], capture_output=True, text=True)
     print("Telegram:", r.stdout[:200])
 
-def gemini(prompt, model="gemini-2.5-pro"):
+def gemini(prompt, model="gemini-2.0-flash"):
     body = json.dumps({
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {"maxOutputTokens": 3000, "temperature": 0.7}
